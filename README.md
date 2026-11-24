@@ -159,3 +159,13 @@ El protocolo usa JSON terminado en salto de línea sobre TCP, con versión y un 
 ## Alcance
 
 Proyecto educativo para una **red de confianza**. Las direcciones son identificadores aleatorios persistentes; los nombres y mensajes no tienen firma criptográfica y el chat no está cifrado. Cualquier participante de esta red puede solicitar el inicio de minería. Leonelcoin es una recompensa simulada contabilizada por bloque; esta versión no implementa transferencias, firmas de monedero ni dinero real. Para equipos detrás de routers distintos se necesita una VPN o configuración de puertos: no hay un servicio central de retransmisión ni perforación automática de NAT.
+
+## Interfaz gráfica
+
+Hay un dashboard web en vivo del minado y la cadena en [`gui/`](gui/README.md):
+
+```sh
+python3 gui/bridge.py --name Ana --advertise 192.168.1.11 --peer 192.168.1.10:6000
+```
+
+Compila el front una vez con `cd gui/web && npm install && npm run build`.
