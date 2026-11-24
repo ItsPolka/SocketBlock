@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-ink: #07080b;
+  --color-panel: #0d0f14;
+  --color-line: #1b1f29;
+  --color-signal: #c6ff3d;
+  --color-amber: #ffb547;
+  --color-violet: #8b7bff;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: #e7e9ee;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Grano sutil sobre todo el fondo */
+body::before {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 60;
+  opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.panel {
+  position: relative;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgb(255 255 255 / .035), rgb(255 255 255 / .012));
+  border: 1px solid var(--color-line);
+  box-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 30px 60px -30px rgb(0 0 0 / .6);
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: #7b8191;
+}
+
+.scroll-x { scrollbar-width: none; }
+.scroll-x::-webkit-scrollbar { display: none; }
+.scroll-y { scrollbar-width: thin; scrollbar-color: #232836 transparent; }
+
+@keyframes scan { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
+.scanline { animation: scan 2.4s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .scanline { animation: none; }
+}
