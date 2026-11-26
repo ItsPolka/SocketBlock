@@ -55,6 +55,7 @@ class Console:
                     f"Dirección: {data['address']}\n"
                     f"Red: {data['network']} | PoW: {difficulty} | Premio: {data['reward']} leonelcoin\n"
                     f"Cadena #{data['height']}: {data['hash']}\n"
+                    f"Tu saldo: {data['balance']} leonelcoin\n"
                     "Usa /ofrecer para proponer un bloque, /iniciar para minar juntos y /ayuda para los comandos.")
         elif event == "peer_connected":
             text = f"Conectado: {data['name']} ({data['endpoint']}) | {data['peers']} pares + tú"

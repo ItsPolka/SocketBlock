@@ -97,6 +97,8 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
         second = await self.make_node(seed, difficulty=3)
         third = await self.make_node(seed, difficulty=3)
         await self.until(lambda: all(len(n.network.peers) == 2 for n in self.nodes))
+        for node in self.nodes:
+            self.assertEqual([node.chain.balance(peer.identity.address) for peer in self.nodes], [100, 100, 100])
         with self.assertRaisesRegex(ValueError, "No hay ofertas"):
             first.start_classroom()
         self.assertTrue(all(n.chain.head.height == 0 and not n.miner.running for n in self.nodes))
@@ -169,8 +171,8 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
         second._accept_block(child)
         first.network.connect(("127.0.0.1", second.network.port))
         await self.until(lambda: first.chain.head.hash == second.chain.head.hash and first.chain.head.height == 2)
-        self.assertEqual(first.chain.balance(first.identity.address), 0)
-        self.assertEqual(first.chain.balance(second.identity.address), 100)
+        self.assertEqual(first.chain.balance(first.identity.address), 100)
+        self.assertEqual(first.chain.balance(second.identity.address), 200)
         parent = mine(second.chain.head, second.chain.consensus)
         grandchild = mine(parent, second.chain.consensus)
         second.chain.add(parent)

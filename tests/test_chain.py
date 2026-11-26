@@ -25,12 +25,12 @@ class ChainTests(unittest.TestCase):
         block = mine(self.chain.head, self.consensus)
         self.assertTrue(self.chain.add(block).head_changed)
         self.assertFalse(self.chain.add(block).accepted)
-        self.assertEqual(self.chain.balance("a" * 64), 50)
-        self.assertEqual(self.chain.balance("a" * 64, 6), 0)
+        self.assertEqual(self.chain.balance("a" * 64), 150)
+        self.assertEqual(self.chain.balance("a" * 64, 6), 100)
         for _ in range(5):
             self.chain.add(mine(self.chain.head, self.consensus))
-        self.assertEqual(self.chain.balance("a" * 64), 300)
-        self.assertEqual(self.chain.balance("a" * 64, 6), 50)
+        self.assertEqual(self.chain.balance("a" * 64), 400)
+        self.assertEqual(self.chain.balance("a" * 64, 6), 150)
 
     def test_rejects_tampering_and_invalid_fields(self):
         good = mine(self.chain.head, self.consensus)
@@ -66,20 +66,26 @@ class ChainTests(unittest.TestCase):
         self.assertTrue(self.chain.add(extended).reorganization)
         alternate.add(extended)
         self.assertEqual(self.chain.main_hashes, alternate.main_hashes)
-        self.assertEqual(self.chain.balance(loser.miner), 100)
+        self.assertEqual(self.chain.balance(loser.miner), 200)
         winner_before = first if loser == other else other
-        self.assertEqual(self.chain.balance(winner_before.miner), 0)
+        self.assertEqual(self.chain.balance(winner_before.miner), 100)
 
     def test_persistence_and_consensus_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chain.sqlite3"
             saved = Blockchain(self.consensus, path)
+            participant = "b" * 64
+            self.assertEqual(saved.balance(participant), 0)
+            saved.register_participant(participant)
+            saved.register_participant(participant)
+            self.assertEqual(saved.balance(participant, 6), 100)
             block = mine(saved.head, self.consensus)
             saved.add(block)
             saved.close()
             reopened = Blockchain(self.consensus, path)
             self.assertEqual(reopened.head, block)
-            self.assertEqual(reopened.balance(block.miner), 50)
+            self.assertEqual(reopened.balance(participant), 100)
+            self.assertEqual(reopened.balance(block.miner), 150)
             reopened.close()
             with self.assertRaisesRegex(ValueError, "otra red"):
                 Blockchain(Consensus(difficulty=2), path)

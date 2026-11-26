@@ -52,6 +52,8 @@ Para minar una oferta, un compañero ejecuta `/iniciar [id]`. Si omite el ID, se
 
 `/cadena todo` muestra la cadena principal completa desde el génesis. `/verificar` compara el hash local con el de cada par. Los anuncios periódicos se actualizan cada cinco segundos. El ganador difunde el bloque completo y los pares solicitan el historial que les falte en lotes de hasta 50 bloques.
 
+Cada dirección de participante comienza con **100 leonelcoin**, incluidas las que ya existían antes de esta actualización. El saldo inicial se conserva al reconectar o cambiar de nombre. `/saldo` muestra el abono inicial más las recompensas obtenidas en la cadena principal. Las seis confirmaciones se aplican a las recompensas de minería.
+
 Si dos nodos encuentran un bloque casi al mismo tiempo, puede aparecer una bifurcación temporal. Todos eligen la cadena con más trabajo acumulado y, en caso de empate, el hash menor. Si cambia la cadena principal, se recalculan los saldos y las ofertas desplazadas vuelven a estar pendientes.
 
 ## Comandos

@@ -71,6 +71,9 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
         await self.until(lambda: any(e["event"] == "ready" for e in first_events))
         second, _, second_events = await self.spawn("Beto", port)
         await self.until(lambda: all(any(e["event"] == "peer_connected" for e in events) for events in self.events))
+        for events in self.events:
+            ready = next(e for e in events if e["event"] == "ready")
+            self.assertEqual(ready["balance"], 100)
         first.stdin.write(b"/iniciar\n")
         await first.stdin.drain()
         await self.until(lambda: any(e["event"] == "error" and "No hay ofertas" in e["message"] for e in first_events))
@@ -103,7 +106,7 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not status["mining"] and status["height"] == 1 for status in statuses))
         self.assertEqual(statuses[0]["hash"], statuses[1]["hash"])
         self.assertEqual(statuses[0]["height"], statuses[1]["height"])
-        self.assertEqual(statuses[0]["balance"] + statuses[1]["balance"], statuses[0]["height"] * 50)
+        self.assertEqual(statuses[0]["balance"] + statuses[1]["balance"], 250)
         for process in (first, second):
             process.stdin.write(b"/salir\n")
             await process.stdin.drain()

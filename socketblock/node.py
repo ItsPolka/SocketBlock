@@ -35,6 +35,11 @@ class Node:
         try:
             self.identity = load_identity(data_dir, name)
             self.chain = Blockchain(consensus or Consensus(), data_dir / "chain.sqlite3")
+            try:
+                self.chain.register_participant(self.identity.address)
+            except BaseException:
+                self.chain.close()
+                raise
         except BaseException:
             self.lock.close()
             raise
@@ -183,6 +188,7 @@ class Node:
         self.emit("chat", {**message, "recipient_name": peer.name, "local": True})
 
     async def _on_peer(self, peer: Peer) -> None:
+        self.chain.register_participant(peer.address)
         self._request_sync(peer)
         peer.send(dict(type="get_offers", after=""))
         classroom = self.rounds.get(self.chain.head.hash)

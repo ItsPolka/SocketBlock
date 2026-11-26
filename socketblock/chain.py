@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .models import (MAX_DIFFICULTY, MIN_DIFFICULTY, ROUND_TARGET_MS, Block,
-                     Consensus, Offer, canonical_json, genesis, validate_work)
+                     Consensus, Offer, canonical_json, genesis, valid_address, validate_work)
 
 DIFFICULTY_WINDOW = 12
+INITIAL_BALANCE = 100
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,9 @@ class Blockchain:
                 offer_id: Offer.from_dict(json.loads(payload))
                 for offer_id, payload in self.db.execute("SELECT id, payload FROM offers")
             }
+            self.db.execute("CREATE TABLE IF NOT EXISTS participants (address TEXT PRIMARY KEY)")
+            self.participants = {address for (address,) in self.db.execute("SELECT address FROM participants")}
+            self.participants.update(offer.author for offer in self.offers.values())
             first = genesis(consensus)
             self.blocks: dict[str, Block] = {first.hash: first}
             self.work: dict[str, int] = {first.hash: 0}
@@ -86,7 +90,17 @@ class Blockchain:
         with self.db:
             self._persist_offer(offer_id, offer)
         self.offers[offer_id] = offer
+        self.participants.add(offer.author)
         return True
+
+    def register_participant(self, address: str) -> None:
+        if not valid_address(address):
+            raise ValueError("Dirección de participante inválida")
+        if address in self.participants:
+            return
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO participants VALUES (?)", (address,))
+        self.participants.add(address)
 
     def _persist_offer(self, offer_id: str, offer: Offer) -> None:
         self.db.execute("INSERT OR IGNORE INTO offers VALUES (?, ?)", (offer_id, canonical_json(offer.to_dict()).decode()))
@@ -102,6 +116,7 @@ class Blockchain:
         self.blocks[block.hash] = block
         self.work[block.hash] = self.work[block.previous_hash] + block.difficulty
         self.offers[offer_id] = block.offer
+        self.participants.update((block.miner, block.offer.author))
         self.offer_uses.setdefault(offer_id, set()).add(block.hash)
 
     def _persist(self, block: Block) -> None:
@@ -159,10 +174,11 @@ class Blockchain:
             self.balances[block.miner] = self.balances.get(block.miner, 0) + block.reward
 
     def balance(self, address: str, confirmations: int = 1) -> int:
+        initial = INITIAL_BALANCE if address in self.participants else 0
         if confirmations <= 1:
-            return self.balances.get(address, 0)
+            return initial + self.balances.get(address, 0)
         end = max(1, len(self.main_hashes) - confirmations + 1)
-        return sum(self.blocks[h].reward for h in self.main_hashes[1:end] if self.blocks[h].miner == address)
+        return initial + sum(self.blocks[h].reward for h in self.main_hashes[1:end] if self.blocks[h].miner == address)
 
     def recent(self, count: int = 10) -> list[Block]:
         return [self.blocks[h] for h in self.main_hashes[max(1, len(self.main_hashes) - count):]]
