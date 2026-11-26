@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import multiprocessing as mp
 import queue
@@ -9,42 +10,23 @@ import secrets
 import time
 from typing import Any
 
-from .models import canonical_json
+from .models import canonical_json, hash_target, now_ms
 
 
-def _worker(jobs: Any, results: Any, stop: Any) -> None:
-    template = None
+def _worker(template: dict[str, Any], results: Any, stop: Any) -> None:
+    target = hash_target(template["difficulty"])
+    nonce = secrets.randbits(64)
     while not stop.is_set():
-        if template is None:
-            try:
-                template = jobs.get(timeout=0.25)
-            except queue.Empty:
-                continue
-        else:
-            try:
-                template = jobs.get_nowait()
-            except queue.Empty:
-                pass
-        if template is None:
-            continue
-        # El orden canónico coloca nonce entre miner_name y previous_hash.
-        # Serializar solo el nonce por intento reduce trabajo repetido.
-        encoded = canonical_json({**template, "nonce": 0})
+        timestamp = max(template["started_at"], now_ms())
+        # El orden canónico coloca nonce entre miner_name y offer.
+        encoded = canonical_json({**template, "timestamp": timestamp})
         prefix, suffix = encoded.split(b'"nonce":0', 1)
         prefix += b'"nonce":'
-        target = "0" * template["difficulty"]
-        nonce = secrets.randbits(64)
-        # Un lote pequeño permite cambiar de punta rápidamente al recibir bloques.
         for _ in range(2048):
             digest = hashlib.sha256(prefix + str(nonce).encode("ascii") + suffix).hexdigest()
-            if digest.startswith(target):
-                block = {**template, "nonce": nonce, "hash": digest}
-                try:
-                    results.put_nowait(block)
-                except queue.Full:
-                    pass
-                template = None
-                break
+            if digest <= target:
+                results.put({**template, "timestamp": timestamp, "nonce": nonce, "hash": digest})
+                return
             nonce = (nonce + 1) & (2**64 - 1)
 
 
@@ -52,76 +34,57 @@ class Miner:
     def __init__(self, workers: int = 1) -> None:
         self.workers = workers
         self.processes: list[Any] = []
-        self.jobs: list[Any] = []
         self.ctx = mp.get_context("spawn")
-        self.results = self.ctx.Queue(maxsize=max(4, workers * 2))
-        self.stop_event = self.ctx.Event()
+        self.results: Any = None
+        self.stop_event: Any = None
+        self.cleanup: set[asyncio.Task[None]] = set()
         self.running = False
-        self.started_at: float | None = None
-        self.latest_template: dict[str, Any] | None = None
 
     def start(self, template: dict[str, Any]) -> None:
-        if self.running:
-            self.submit(template)
-            return
-        self.stop_event.clear()
+        self.stop_event = self.ctx.Event()
+        self.results = self.ctx.Queue(maxsize=self.workers)
         try:
             for index in range(self.workers):
-                jobs = self.ctx.Queue(maxsize=2)
-                process = self.ctx.Process(target=_worker, args=(jobs, self.results, self.stop_event), name=f"pow-{index + 1}", daemon=True)
-                self.jobs.append(jobs)
+                process = self.ctx.Process(target=_worker, args=(template, self.results, self.stop_event),
+                                           name=f"pow-{index + 1}", daemon=True)
                 process.start()
                 self.processes.append(process)
             self.running = True
-            self.started_at = time.monotonic()
-            self.submit(template)
         except BaseException:
             self.stop()
             raise
 
-    def submit(self, template: dict[str, Any]) -> None:
-        self.latest_template = template
-        if not self.running:
-            return
-        for jobs in self.jobs:
-            # Drena trabajos anteriores. Queue usa un feeder; si aún no están
-            # visibles, el último trabajo se encola detrás y sustituye al anterior.
-            while True:
-                try:
-                    jobs.get_nowait()
-                except queue.Empty:
-                    break
-            try:
-                jobs.put_nowait(template)
-            except queue.Full:
-                # La siguiente iteración del coordinador vuelve a intentarlo.
-                pass
-
-    def poll(self) -> list[dict[str, Any]]:
-        found = []
-        while True:
-            try:
-                found.append(self.results.get_nowait())
-            except queue.Empty:
-                return found
+    def poll(self) -> dict[str, Any] | None:
+        try:
+            return self.results.get_nowait()
+        except queue.Empty:
+            return None
 
     def stop(self) -> None:
         self.running = False
+        if self.stop_event is None:
+            return
         self.stop_event.set()
+        # La señal detiene la búsqueda en el siguiente lote. Recogemos los
+        # procesos fuera del bucle de sockets para difundir el ganador enseguida.
+        cleanup = asyncio.create_task(asyncio.to_thread(self._join, self.processes, self.results, self.stop_event))
+        self.cleanup.add(cleanup)
+        cleanup.add_done_callback(self.cleanup.discard)
+        self.processes = []
+        self.results = self.stop_event = None
+
+    @staticmethod
+    def _join(processes: list[Any], results: Any, _stop_event: Any) -> None:
+        # Conserva el semáforo mientras los hijos que siguen arrancando lo abren.
         deadline = time.monotonic() + 3
-        for process in self.processes:
+        for process in processes:
             process.join(timeout=max(0, deadline - time.monotonic()))
             if process.is_alive():
-                process.terminate()
-                process.join(timeout=1)
-        for jobs in self.jobs:
-            jobs.cancel_join_thread()
-            jobs.close()
-        self.jobs.clear()
-        self.processes.clear()
-        self.poll()
+                process.kill()
+                process.join()
+            process.close()
+        results.close()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.stop()
-        self.results.cancel_join_thread()
-        self.results.close()
+        await asyncio.gather(*self.cleanup)

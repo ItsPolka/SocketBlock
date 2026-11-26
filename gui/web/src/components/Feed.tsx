@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Blocks, GitFork, MessageCircle, Pickaxe, RefreshCw, Send, UserMinus, UserPlus, Users } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../lib/utils";
-import type { FeedItem } from "../useNode";
+import type { FeedItem, User } from "../useNode";
 
 const ICON = {
   winner: Blocks, peer_in: UserPlus, peer_out: UserMinus, chat: MessageCircle, mining: Pickaxe,
@@ -14,8 +14,11 @@ const TONE: Record<FeedItem["kind"], string> = {
   fork: "text-pink-300 bg-pink-400/10", error: "text-red-300 bg-red-400/10", classroom: "text-amber bg-amber/10",
 };
 
-export default function Feed({ items, onChat }: { items: FeedItem[]; onChat: (t: string) => void }) {
+export default function Feed({ items, onChat, users }: { items: FeedItem[]; onChat: (t: string) => void; users: User[] }) {
   const [text, setText] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const peers = users.filter((user) => !user.local);
+  const available = !recipient || peers.some((user) => user.address === recipient);
   return (
     <div className="panel flex h-full min-h-[420px] flex-col p-5 sm:p-6">
       <span className="label mb-4">Actividad y chat</span>
@@ -55,19 +58,32 @@ export default function Feed({ items, onChat }: { items: FeedItem[]; onChat: (t:
         onSubmit={(e) => {
           e.preventDefault();
           const t = text.trim();
-          if (!t) return;
-          onChat(t.startsWith("/") ? ` ${t}` : t);
+          if (!t || !available) return;
+          onChat(recipient ? `/mensaje ${recipient} ${t}` : `/decir ${t}`);
           setText("");
         }}
       >
+        <select
+          aria-label="Destinatario"
+          className="max-w-32 rounded-md bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+          onChange={(e) => setRecipient(e.target.value)}
+          value={recipient}
+        >
+          <option value="">Todo el salón</option>
+          {!available && <option value={recipient}>Desconectado</option>}
+          {peers.map((user) => (
+            <option key={user.address} value={user.address}>{user.name} · {user.address.slice(0, 6)}</option>
+          ))}
+        </select>
         <input
-          className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
-          maxLength={280}
+          aria-label="Mensaje"
+          className="min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+          maxLength={2000}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Escribe al salón…"
+          placeholder={recipient ? "Escribe un mensaje directo…" : "Escribe al salón…"}
           value={text}
         />
-        <button className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 text-zinc-200 transition hover:bg-white/20" type="submit">
+        <button aria-label="Enviar mensaje" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-zinc-200 transition hover:bg-white/20 disabled:opacity-40" disabled={!available || !text.trim()} type="submit">
           <Send className="h-3.5 w-3.5" />
         </button>
       </form>

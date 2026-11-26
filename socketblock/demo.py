@@ -30,14 +30,9 @@ async def wait_for(condition: Callable[[], bool], description: str, timeout: flo
 async def demonstrate(count: int, blocks: int, difficulty: int, timeout: float) -> None:
     nodes: list[Node] = []
     chats: set[int] = set()
-    reported: set[str] = set()
-
-    def event(index, kind, data):
+    def event(index, kind, _data):
         if kind == "chat":
             chats.add(index)
-        elif kind == "winner" and data["hash"] not in reported:
-            reported.add(data["hash"])
-            print(f"  Bloque #{data['height']}: {data['name']} | {data['hash']}", flush=True)
 
     with tempfile.TemporaryDirectory(prefix="socketblock-demo-") as directory:
         try:
@@ -53,14 +48,18 @@ async def demonstrate(count: int, blocks: int, difficulty: int, timeout: float) 
             nodes[0].chat("El salón está conectado y listo para minar")
             await wait_for(lambda: len(chats) == count, "distribución del chat", timeout)
             print(f"OK: chat recibido en los {count} nodos, sin servidor central.", flush=True)
-            nodes[0].start_classroom()
-            await wait_for(lambda: all(n.miner.running for n in nodes), "inicio de todos los mineros", timeout)
-            print(f"OK: {count} mineros activos al mismo tiempo.", flush=True)
-            await wait_for(lambda: all(n.chain.head.height >= blocks for n in nodes), f"{blocks} bloques", timeout)
-            # Pausa local para comparar una instantánea inmóvil de las cadenas.
-            for node in nodes:
-                node.pause_mining()
-            await wait_for(lambda: len({n.chain.head.hash for n in nodes}) == 1, "convergencia de la cadena", timeout)
+            for height in range(1, blocks + 1):
+                proposer = nodes[(height - 1) % count]
+                proposer.propose(f"Oferta para la ronda {height}")
+                await wait_for(lambda: all(n.chain.pending_offers() for n in nodes), "difusión de la oferta", timeout)
+                proposer.start_classroom()
+                await wait_for(
+                    lambda: all(n.chain.head.height == height and not n.miner.running for n in nodes)
+                    and len({n.chain.head.hash for n in nodes}) == 1,
+                    f"bloque {height} compartido con los mineros detenidos", timeout,
+                )
+                block = proposer.chain.head
+                print(f"  Bloque #{height}: {block.miner_name} | {block.hash}", flush=True)
             first = nodes[0]
             if not all(n.chain.main_hashes == first.chain.main_hashes and n.chain.balances == first.chain.balances for n in nodes):
                 raise RuntimeError("Las cadenas o los saldos difieren")

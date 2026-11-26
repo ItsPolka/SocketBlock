@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-export type Block = {
+export type Proposal = { author: string; name: string; text: string; timestamp: number };
+export type Offer = Proposal & { id: string };
+
+export type Template = {
   network_id: string;
   height: number;
   previous_hash: string;
   timestamp: number;
+  started_at: number;
   miner: string;
   miner_name: string;
   reward: number;
   difficulty: number;
-  nonce: number;
+  offer: Proposal;
+};
+
+export type Block = Omit<Template, "offer"> & {
+  offer: Proposal | null;
+  nonce: string;
   hash: string;
 };
 
@@ -19,6 +28,9 @@ export type Status = {
   network: string;
   network_id: string;
   difficulty: number;
+  target: string;
+  fixed_difficulty: number | null;
+  round_target_seconds: number;
   reward: number;
   peers: number;
   users: number;
@@ -27,6 +39,8 @@ export type Status = {
   balance: number;
   confirmed_balance: number;
   mining: boolean;
+  template: Template | null;
+  classroom: boolean;
   workers: number;
 };
 
@@ -74,7 +88,7 @@ function toFeed(e: Raw): FeedItem | null {
     case "peer_disconnected":
       return { id: nid(), kind: "peer_out", ts, title: `${e.name} se desconectó` };
     case "chat":
-      return { id: nid(), kind: "chat", ts, local: e.local, title: e.name, detail: e.text };
+      return { id: nid(), kind: "chat", ts, local: e.local, title: e.recipient ? (e.local ? `Directo a ${e.recipient_name}` : `Directo de ${e.name}`) : e.name, detail: e.text };
     case "mining_started":
       return { id: nid(), kind: "mining", ts, title: `Minando bloque #${e.height}`, detail: `${e.workers} proceso(s)` };
     case "mining_paused":
@@ -96,20 +110,12 @@ function toFeed(e: Raw): FeedItem | null {
 export function useNode() {
   const [status, setStatus] = useState<Status | null>(null);
   const [users, setUsers] = useState<User[]>([]);
-  const [blocks, setBlocks] = useState<Map<number, Block>>(new Map());
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  const [offers, setOffers] = useState<Offer[]>([]);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [winner, setWinner] = useState<WinnerEvent | null>(null);
   const [online, setOnline] = useState(false);
   const [nodeAlive, setNodeAlive] = useState(true);
-  const statusRef = useRef<Status | null>(null);
-
-  const mergeBlocks = useCallback((list: Block[]) => {
-    setBlocks((prev) => {
-      const next = new Map(prev);
-      for (const b of list) next.set(b.height, b);
-      return next;
-    });
-  }, []);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -118,19 +124,16 @@ export function useNode() {
     const handle = (e: Raw) => {
       switch (e.event) {
         case "snapshot": {
-          if (e.status) {
-            statusRef.current = e.status;
-            setStatus(e.status);
-          }
+          if (e.status) setStatus(e.status);
           setUsers(e.users ?? []);
-          setBlocks(new Map((e.blocks as Block[]).map((b) => [b.height, b])));
+          setBlocks(e.blocks ?? []);
+          setOffers(e.offers ?? []);
           setFeed((e.log as Raw[]).map(toFeed).filter(Boolean).reverse().slice(0, 60) as FeedItem[]);
           return;
         }
         case "ready":
         case "status": {
           const { event: _e, ts: _t, ...s } = e;
-          statusRef.current = s as Status;
           setStatus(s as Status);
           return;
         }
@@ -138,38 +141,35 @@ export function useNode() {
           setUsers(e.users);
           return;
         case "chain":
-          mergeBlocks(e.blocks);
+          setBlocks(e.blocks);
+          return;
+        case "offers":
+          setOffers(e.offers);
+          return;
+        case "offer":
+          setOffers((previous) => [...previous.filter((offer) => offer.id !== e.id),
+            { id: e.id, author: e.author, name: e.name, text: e.text, timestamp: e.timestamp }]);
           return;
         case "node_exit":
           setNodeAlive(false);
           return;
         case "winner": {
           setWinner({ height: e.height, hash: e.hash, name: e.name, address: e.address, reward: e.reward, local: e.local, ts: Date.now() });
-          // Mientras llegan los datos completos, mostramos el bloque con lo que ya sabemos.
-          setBlocks((prev) => {
-            const next = new Map(prev);
-            if (e.reorganization) {
-              for (const h of [...next.keys()]) if (h >= e.height) next.delete(h);
-            }
-            const old = next.get(e.height);
-            if (!old || old.hash !== e.hash) {
-              const s = statusRef.current;
-              next.set(e.height, {
-                network_id: s?.network_id ?? "", height: e.height, previous_hash: e.previous_hash,
-                timestamp: Date.now(), miner: e.address, miner_name: e.name, reward: e.reward,
-                difficulty: s?.difficulty ?? 6, nonce: -1, hash: e.hash,
-              });
-            }
-            return next;
-          });
-          setStatus((s) => (s ? { ...s, height: e.height, hash: e.hash, balance: e.balance, mining: e.mining } : s));
+          setBlocks((previous) => e.reorganization ? [e.block] :
+            [...previous.filter((block) => block.height < e.height), e.block]);
+          setOffers((previous) => previous.filter((offer) => offer.id !== e.offer_id));
+          setStatus((s) => (s ? { ...s, height: e.height, hash: e.hash, balance: e.balance,
+            mining: false, template: null, classroom: false } : s));
           break;
         }
         case "mining_started":
-          setStatus((s) => (s ? { ...s, mining: true } : s));
+          setStatus((s) => (s ? { ...s, mining: true, template: e.template } : s));
           break;
         case "mining_paused":
-          setStatus((s) => (s ? { ...s, mining: false } : s));
+          setStatus((s) => (s ? { ...s, mining: false, template: null } : s));
+          break;
+        case "classroom_started":
+          setStatus((s) => (s ? { ...s, classroom: true } : s));
           break;
       }
       const item = toFeed(e);
@@ -197,11 +197,19 @@ export function useNode() {
       source?.close();
       window.clearTimeout(retry);
     };
-  }, [mergeBlocks]);
-
-  const send = useCallback(async (cmd: string) => {
-    await fetch("/api/cmd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cmd }) });
   }, []);
 
-  return { status, users, blocks, feed, winner, online, nodeAlive, send };
+  const send = useCallback(async (cmd: string) => {
+    try {
+      const response = await fetch("/api/cmd", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cmd }),
+      });
+      if (!response.ok) throw new Error("El puente rechazó el comando");
+    } catch {
+      const item: FeedItem = { id: nid(), kind: "error", title: "No se pudo enviar el comando", ts: Date.now() };
+      setFeed((items) => [item, ...items].slice(0, 60));
+    }
+  }, []);
+
+  return { status, users, blocks, offers, feed, winner, online, nodeAlive, send };
 }

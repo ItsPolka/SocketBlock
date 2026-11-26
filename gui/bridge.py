@@ -26,7 +26,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DIST = HERE / "web" / "dist"
-ALLOWED = ("/minar", "/pausar", "/iniciar", "/conectar ", "/cadena ", "/estado", "/usuarios")
+ALLOWED = {"/minar", "/pausar", "/iniciar", "/conectar", "/estado", "/usuarios",
+           "/ofrecer", "/ofertas", "/mensaje", "/decir"}
 TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2"}
 
@@ -37,7 +38,10 @@ class Bridge:
         self.clients: list[queue.Queue[str]] = []
         self.status: dict | None = None
         self.users: list = []
-        self.blocks: dict[int, dict] = {}
+        self.blocks: list[dict] = []
+        self.chain_hash: str | None = None
+        self.offers: list[dict] = []
+        self.input_lock = threading.Lock()
         self.log: deque[dict] = deque(maxlen=150)
         self.proc = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, encoding="utf-8", bufsize=1)
@@ -46,19 +50,23 @@ class Bridge:
 
     # ---- nodo ----
     def send(self, line: str) -> None:
-        if self.proc.poll() is None and self.proc.stdin:
-            try:
-                self.proc.stdin.write(line.strip() + "\n")
-                self.proc.stdin.flush()
-            except OSError:
-                pass
+        with self.input_lock:
+            if self.proc.poll() is None and self.proc.stdin:
+                try:
+                    self.proc.stdin.write(line.strip() + "\n")
+                    self.proc.stdin.flush()
+                except OSError:
+                    pass
 
     def _poll(self) -> None:
-        time.sleep(1.0)
-        self.send("/cadena 100")
         while self.proc.poll() is None:
             self.send("/estado")
             self.send("/usuarios")
+            self.send("/ofertas")
+            with self.lock:
+                chain_changed = self.status is not None and self.status["hash"] != self.chain_hash
+            if chain_changed:
+                self.send("/cadena todo")
             time.sleep(1.5)
 
     def _read(self) -> None:
@@ -73,7 +81,11 @@ class Bridge:
                 event = {"event": "log", "text": raw}
                 print(f"[nodo] {raw}", flush=True)
             event["ts"] = time.time()
-            self._absorb(event)
+            if event.get("event") == "chain":
+                for block in event["blocks"]:
+                    block["nonce"] = str(block["nonce"])
+            elif event.get("event") == "winner":
+                event["block"]["nonce"] = str(event["block"]["nonce"])
             self.publish(event)
         code = self.proc.wait()
         self.publish({"event": "node_exit", "code": code, "ts": time.time()})
@@ -84,37 +96,48 @@ class Bridge:
 
     def _absorb(self, event: dict) -> None:
         kind = event.get("event")
-        with self.lock:
-            if kind in ("status", "ready"):
-                self.status = {k: v for k, v in event.items() if k not in ("event", "ts")}
-            elif kind == "users":
-                self.users = event["users"]
-            elif kind == "chain":
-                for block in event["blocks"]:
-                    self.blocks[block["height"]] = block
-            elif kind not in ("status", "users", "response"):
-                self.log.append(event)
-        if kind == "winner":
-            # El evento no trae nonce ni timestamp: pedimos los bloques completos.
-            self.send("/cadena 40" if event.get("reorganization") else "/cadena 3")
-        elif kind == "sync":
-            self.send("/cadena 100")
+        if kind in ("status", "ready"):
+            self.status = {k: v for k, v in event.items() if k not in ("event", "ts")}
+        elif kind == "users":
+            self.users = event["users"]
+        elif kind == "chain":
+            self.blocks = event["blocks"]
+            self.chain_hash = event["hash"]
+        elif kind == "offers":
+            self.offers = event["offers"]
+        elif kind != "response":
+            self.log.append(event)
+            if kind == "offer":
+                self.offers = [*self.offers, {key: event[key] for key in ("id", "author", "name", "text", "timestamp")}]
+            elif kind == "winner":
+                self.offers = [offer for offer in self.offers if offer["id"] != event["offer_id"]]
+                if self.status is not None:
+                    self.status.update(height=event["height"], hash=event["hash"], balance=event["balance"],
+                                       mining=False, template=None, classroom=False)
+            elif self.status is not None:
+                if kind == "mining_started":
+                    self.status.update(mining=True, template=event["template"])
+                elif kind == "mining_paused":
+                    self.status.update(mining=False, template=None)
+                elif kind == "classroom_started":
+                    self.status["classroom"] = True
 
     # ---- navegador ----
     def publish(self, event: dict) -> None:
         data = json.dumps(event, ensure_ascii=False)
         with self.lock:
+            self._absorb(event)
             for client in list(self.clients):
                 try:
                     client.put_nowait(data)
                 except queue.Full:
                     self.clients.remove(client)
 
-    def snapshot(self) -> str:
+    def subscribe(self, client: queue.Queue[str]) -> str:
         with self.lock:
-            heights = sorted(self.blocks)[-100:]
+            self.clients.append(client)
             return json.dumps({"event": "snapshot", "status": self.status, "users": self.users,
-                               "blocks": [self.blocks[h] for h in heights], "log": list(self.log)},
+                               "blocks": self.blocks, "offers": self.offers, "log": list(self.log)},
                               ensure_ascii=False)
 
 
@@ -130,10 +153,8 @@ def make_handler(bridge: Bridge):
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 client: queue.Queue[str] = queue.Queue(maxsize=2000)
-                with bridge.lock:
-                    bridge.clients.append(client)
                 try:
-                    self.wfile.write(f"data: {bridge.snapshot()}\n\n".encode())
+                    self.wfile.write(f"data: {bridge.subscribe(client)}\n\n".encode())
                     self.wfile.flush()
                     while True:
                         try:
@@ -167,14 +188,22 @@ def make_handler(bridge: Bridge):
             if self.path != "/api/cmd":
                 self.send_error(404)
                 return
-            length = min(int(self.headers.get("Content-Length", 0)), 2000)
+            if self.headers.get_content_type() != "application/json":
+                self.send_error(415)
+                return
             try:
-                line = str(json.loads(self.rfile.read(length))["cmd"]).replace("\n", " ").strip()
+                length = int(self.headers.get("Content-Length", 0))
+                if not 1 <= length <= 32768:
+                    raise ValueError("Tamaño inválido")
+                raw = json.loads(self.rfile.read(length))["cmd"]
+                if not isinstance(raw, str) or "\r" in raw or "\n" in raw:
+                    raise ValueError("Comando inválido")
+                line = raw.strip()
             except (ValueError, KeyError, TypeError):
                 self.send_error(400)
                 return
             # Comandos permitidos, o texto de chat (sin /).
-            if not line or (line.startswith("/") and not line.startswith(ALLOWED)):
+            if not line or (line.startswith("/") and line.split(maxsplit=1)[0] not in ALLOWED):
                 self.send_error(400, "Comando no permitido")
                 return
             bridge.send(line)

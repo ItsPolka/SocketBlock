@@ -2,9 +2,10 @@ import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from socketblock.chain import Blockchain
-from socketblock.models import Block, Consensus, genesis, now_ms, validate_work
+from socketblock.models import Block, Consensus, Offer, genesis, now_ms
 from socketblock.storage import DataLock, load_identity
 from tests.helpers import mine
 
@@ -104,6 +105,63 @@ class ChainTests(unittest.TestCase):
         for values in (dict(difficulty=True), dict(reward=0), dict(network="")):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 Consensus(**values)
+
+    def test_rejects_reused_offer_and_keeps_losing_offer_pending(self):
+        first = mine(self.chain.head, self.consensus)
+        other = mine(self.chain.head, self.consensus, "b" * 64, "Beto")
+        self.chain.add(first)
+        self.chain.add(other)
+        winner = self.chain.head
+        loser = other if winner == first else first
+        self.assertEqual([offer["id"] for offer in self.chain.pending_offers()], [loser.offer.id])
+        with self.assertRaisesRegex(ValueError, "ya está incluida"):
+            self.chain.add(mine(winner, self.consensus, offer=winner.offer))
+        extended = mine(loser, self.consensus)
+        self.chain.add(extended)
+        self.assertEqual([offer["id"] for offer in self.chain.pending_offers()], [winner.offer.id])
+
+    def test_adaptive_difficulty_uses_mining_duration_and_validates_on_every_branch(self):
+        with patch("socketblock.models.INITIAL_DIFFICULTY", 64):
+            consensus = Consensus()
+            chain = Blockchain(consensus)
+            self.addCleanup(chain.close)
+            first_offer = Offer("a" * 64, "Ana", "Ronda rápida", now_ms() - 400_000)
+            slow_offer = Offer("b" * 64, "Beto", "Ronda lenta", now_ms() - 400_000)
+            first = mine(chain.head, consensus, offer=first_offer,
+                         started_at=now_ms() - 300_000, duration=30_000)
+            slow = mine(chain.head, consensus, offer=slow_offer,
+                        started_at=now_ms() - 300_000, duration=240_000)
+            chain.add(first)
+            chain.add(slow)
+            self.assertEqual(chain.next_difficulty(first), 128)
+            self.assertEqual(chain.next_difficulty(slow), 32)
+            wrong = mine(first, consensus, difficulty=32)
+            with self.assertRaisesRegex(ValueError, "Dificultad incompatible"):
+                chain.add(wrong)
+            second = mine(first, consensus, difficulty=128)
+            chain.add(second)
+            parent = slow
+            for _ in range(2):
+                parent = mine(parent, consensus, difficulty=chain.next_difficulty(parent))
+                chain.add(parent)
+            self.assertGreater(parent.height, second.height)
+            self.assertEqual(chain.head, second)
+
+    def test_adaptive_difficulty_converges_to_target_after_hashrate_change(self):
+        with patch("socketblock.models.INITIAL_DIFFICULTY", 64):
+            consensus = Consensus()
+            chain = Blockchain(consensus)
+            self.addCleanup(chain.close)
+            started_at = now_ms() - 180_000_000
+            for hashrate in (2, 4):
+                for _ in range(16):
+                    difficulty = chain.next_difficulty()
+                    offer = Offer("a" * 64, "Ana", f"Oferta {started_at}", started_at)
+                    block = mine(chain.head, consensus, offer=offer, started_at=started_at,
+                                 duration=difficulty * 1000 // hashrate, difficulty=difficulty)
+                    chain.add(block)
+                    started_at = block.timestamp + 3_600_000
+                self.assertEqual(chain.next_difficulty(), hashrate * 120)
 
 
 class StorageTests(unittest.TestCase):

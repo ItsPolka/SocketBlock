@@ -1,5 +1,5 @@
 import { animate, motion, useMotionValue, useTransform } from "motion/react";
-import { Coins, Gauge, Hexagon, Pause, Pickaxe, Timer, Users, Zap } from "lucide-react";
+import { Coins, Gauge, Hexagon, Timer, Users, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import ChainStrip from "./components/ChainStrip";
 import Feed from "./components/Feed";
@@ -7,6 +7,7 @@ import BackgroundPaths from "./components/kokonutui/background-paths";
 import Leaderboard from "./components/Leaderboard";
 import MinerPanel from "./components/MinerPanel";
 import NetworkOrbit from "./components/NetworkOrbit";
+import OffersPanel from "./components/OffersPanel";
 import WinnerBurst from "./components/WinnerBurst";
 import { cn } from "./lib/utils";
 import { useNode } from "./useNode";
@@ -37,10 +38,10 @@ function Metric({ icon: Icon, label, value, suffix, accent, decimals }: { icon: 
 }
 
 export default function App() {
-  const { status, users, blocks, feed, winner, online, nodeAlive, send } = useNode();
+  const { status, users, blocks, offers, feed, winner, online, nodeAlive, send } = useNode();
   const [fresh, setFresh] = useState<number | null>(null);
 
-  const list = useMemo(() => [...blocks.values()].sort((a, b) => b.height - a.height), [blocks]);
+  const list = useMemo(() => [...blocks].sort((a, b) => b.height - a.height), [blocks]);
 
   useEffect(() => {
     if (!winner) return;
@@ -49,13 +50,11 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [winner]);
 
-  const timed = list.filter((b) => b.nonce >= 0);
   const avg = useMemo(() => {
-    const t = timed.slice(0, 20);
-    if (t.length < 2) return 0;
-    return (t[0].timestamp - t[t.length - 1].timestamp) / (t.length - 1) / 1000;
-  }, [timed]);
-  const lastBlockAt = winner?.ts ?? (timed[0]?.timestamp || null);
+    const rounds = list.filter((b) => b.height > 0).slice(0, 20);
+    if (!rounds.length) return 0;
+    return rounds.reduce((total, block) => total + block.timestamp - block.started_at, 0) / rounds.length / 1000;
+  }, [list]);
   const mining = !!status?.mining;
 
   return (
@@ -73,7 +72,7 @@ export default function App() {
               <div>
                 <div className="font-semibold text-lg tracking-tight text-zinc-50">SocketBlock Live</div>
                 <div className="font-mono text-[11px] text-zinc-500">
-                  {status?.network ?? "—"} · PoW {status?.difficulty ?? "–"} ceros · {status?.reward ?? "–"} LC por bloque
+                  {status?.network ?? "—"} · PoW {status?.fixed_difficulty ? status.fixed_difficulty + " ceros" : "meta 120 s"} · {status?.reward ?? "–"} LC por bloque
                 </div>
               </div>
             </div>
@@ -87,25 +86,6 @@ export default function App() {
                 <span className={cn("h-1.5 w-1.5 rounded-full", online && nodeAlive ? "bg-signal" : "bg-red-400")} />
                 {!nodeAlive ? "nodo detenido" : online ? "conectado" : "reconectando…"}
               </span>
-              <button
-                className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 transition hover:bg-white/10"
-                onClick={() => send("/iniciar")}
-                type="button"
-              >
-                <Users className="h-4 w-4" /> Iniciar salón
-              </button>
-              <motion.button
-                className={cn(
-                  "relative flex items-center gap-2 overflow-hidden rounded-full px-5 py-2 font-medium text-sm transition",
-                  mining ? "bg-zinc-100 text-black hover:bg-white" : "bg-signal text-black hover:brightness-110"
-                )}
-                onClick={() => send(mining ? "/pausar" : "/minar")}
-                type="button"
-                whileTap={{ scale: 0.96 }}
-              >
-                {mining ? <Pause className="h-4 w-4" /> : <Pickaxe className="h-4 w-4" />}
-                {mining ? "Pausar" : "Minar"}
-              </motion.button>
             </div>
           </div>
 
@@ -126,21 +106,23 @@ export default function App() {
         <section className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <Metric accent="text-signal" icon={Coins} label="Tu saldo" suffix="LC" value={status?.balance ?? 0} />
           <Metric icon={Zap} label="Confirmado (6)" suffix="LC" value={status?.confirmed_balance ?? 0} />
-          <Metric icon={Users} label="Mineros" value={status?.users ?? users.length} />
-          <Metric decimals={1} icon={Timer} label="Tiempo prom. bloque" suffix="s" value={avg} />
+          <Metric icon={Users} label="Usuarios" value={status?.users ?? users.length} />
+          <Metric decimals={1} icon={Timer} label="Minería promedio" suffix="s" value={avg} />
           <Metric accent="text-amber" icon={Gauge} label="Altura" value={status?.height ?? 0} />
         </section>
 
+        <OffersPanel offers={offers} ready={online && nodeAlive && !!status} send={send} status={status} />
+
         <section className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
-          <MinerPanel lastBlockAt={lastBlockAt} status={status} />
+          <MinerPanel status={status} />
           <NetworkOrbit headHash={status?.hash} users={users} winner={winner} />
         </section>
 
         <ChainStrip blocks={list} freshHeight={fresh} me={status?.address} />
 
         <section className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
-          <Leaderboard blocks={list} me={status?.address} />
-          <Feed items={feed} onChat={send} />
+          <Leaderboard blocks={list.filter((block) => block.height > 0)} me={status?.address} />
+          <Feed items={feed} onChat={send} users={users} />
         </section>
       </main>
     </div>

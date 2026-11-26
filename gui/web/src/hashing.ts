@@ -2,25 +2,13 @@
 // del siguiente bloque (mismo JSON canónico que socketblock/models.py).
 // El minero de verdad corre en Python; esto solo hace visible el trabajo.
 
-export type Template = {
-  network_id: string;
-  height: number;
-  previous_hash: string;
-  timestamp: number;
-  miner: string;
-  miner_name: string;
-  reward: number;
-  difficulty: number;
-};
+import type { Template } from "./useNode";
 
-const asciiEscape = (s: string) =>
-  s.replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-
-/** json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) */
-export function canonical(t: Template, nonce: number): string {
-  const obj: Record<string, string | number> = { ...t, nonce };
-  const keys = Object.keys(obj).sort();
-  return asciiEscape(`{${keys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`).join(",")}}`);
+export function canonical(template: Template, timestamp: number, nonce: number): string {
+  const header = { ...template, timestamp, nonce };
+  const keys = [...new Set([...Object.keys(header), ...Object.keys(template.offer)])].sort();
+  return JSON.stringify(header, keys).replace(/[\u007f-\uffff]/g, (char) =>
+    "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 const enc = new TextEncoder();

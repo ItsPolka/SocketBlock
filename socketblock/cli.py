@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import multiprocessing
+import re
 import signal
 import sys
 import threading
@@ -14,19 +15,23 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .models import Consensus, valid_address
+from .models import DEFAULT_NETWORK, Consensus, valid_address
 from .network import parse_endpoint, valid_advertised_host
 from .node import Node
 
 HELP = """Comandos:
-  /iniciar                 Inicia la minería en TODOS los nodos conectados
-  /minar                   Inicia o reanuda solamente tu minería
+  /ofrecer <contenido>      Publica una oferta de bloque para el salón
+  /ofertas                 Muestra las ofertas pendientes y sus IDs
+  /iniciar [id]            Inicia una ronda del salón para la oferta elegida
+  /minar [id]              Mina una oferta solo en tu nodo o únete a la ronda del salón
   /pausar                  Pausa solamente tu minería; sigues recibiendo bloques
+  /mensaje <usuario> <texto> Envía chat directo por nombre único o dirección
+  /decir <texto>            Envía chat al salón, incluso si empieza con /
   /usuarios (o /pares)      Muestra usuarios, direcciones, alturas y hashes
   /estado                  Muestra tu cadena, saldo, conexiones y configuración
   /verificar               Compara tu hash con el último anunciado por cada par
   /saldo [direccion]       Saldo de leonelcoin en la cadena principal
-  /cadena [cantidad]       Últimos bloques (10 por defecto, máximo 100)
+  /cadena [cantidad|todo]  Últimos bloques o la cadena completa
   /ganadores [cantidad]    Últimos ganadores y recompensas
   /conectar IP:PUERTO      Agrega un par sin reiniciar
   /ayuda                   Muestra estos comandos
@@ -44,29 +49,35 @@ class Console:
             return
         text = ""
         if event == "ready":
+            fixed = data["fixed_difficulty"]
+            difficulty = f"{fixed} ceros" if fixed else f"adaptativa, meta {data['round_target_seconds']} s"
             text = (f"SocketBlock {__version__} | {data['name']} | TCP {data['host']}:{data['port']}\n"
                     f"Dirección: {data['address']}\n"
-                    f"Red: {data['network']} | PoW: {data['difficulty']} ceros | Premio: {data['reward']} leonelcoin\n"
+                    f"Red: {data['network']} | PoW: {difficulty} | Premio: {data['reward']} leonelcoin\n"
                     f"Cadena #{data['height']}: {data['hash']}\n"
-                    "Usa /usuarios para ver al salón, /iniciar para minar juntos y /ayuda para los comandos.")
+                    "Usa /ofrecer para proponer un bloque, /iniciar para minar juntos y /ayuda para los comandos.")
         elif event == "peer_connected":
             text = f"Conectado: {data['name']} ({data['endpoint']}) | {data['peers']} pares + tú"
         elif event == "peer_disconnected":
             text = f"Desconectado: {data['name']} | Quedan {data['peers']} pares"
         elif event == "chat":
-            text = f"{data['name']}: {data['text']}"
+            prefix = ""
+            if data.get("recipient"):
+                prefix = f"[Directo a {data['recipient_name']}] " if data["local"] else "[Directo] "
+            text = f"{prefix}{data['name']}: {data['text']}"
+        elif event == "offer":
+            text = f"Oferta de {data['name']}: {data['text']}\n  ID: {data['id']}"
         elif event == "mining_started":
-            text = f"Minando bloque #{data['height']} con {data['workers']} proceso(s). Chat y red siguen disponibles."
+            text = f"Minando bloque #{data['height']} con {data['workers']} proceso(s): {data['template']['offer']['text']}"
         elif event == "mining_paused":
             text = "Minería local pausada. La cadena y el chat siguen sincronizándose."
         elif event == "classroom_started":
-            text = f"{data['name']} inició la minería del salón."
+            text = f"{data['name']} inició la minería del salón para la oferta «{data['offer']}»."
         elif event == "winner":
             reorg = " | Cadena reorganizada; saldos recalculados" if data["reorganization"] else ""
-            next_round = f" | Minando ahora #{data['height'] + 1}" if data["mining"] else ""
             text = (f"BLOQUE #{data['height']} | Ganador: {data['name']} | +{data['reward']} leonelcoin{reorg}\n"
                     f"Hash de la cadena: {data['hash']}\n"
-                    f"Trabajo anterior cancelado | Tu saldo: {data['balance']} leonelcoin{next_round}")
+                    f"Ronda terminada | Tu saldo: {data['balance']} leonelcoin")
         elif event == "fork":
             text = f"Bloque alternativo #{data['height']} de {data['name']} guardado; se aplica la regla de consenso."
         elif event == "sync":
@@ -89,17 +100,40 @@ def handle_command(node: Node, line: str, console: Console) -> bool:
     if not line.startswith("/"):
         node.chat(line)
         return True
-    parts = line.split()
-    command, arguments = parts[0].lower(), parts[1:]
+    parts = line.split(maxsplit=1)
+    command = parts[0].lower()
+    argument = parts[1] if len(parts) == 2 else ""
+    arguments = argument.split()
     text = ""
     if command == "/salir":
         return False
     if command in ("/ayuda", "/help"):
         text = HELP
-    elif command == "/iniciar":
-        node.start_classroom()
-    elif command == "/minar":
-        node.start_mining()
+    elif command == "/ofrecer":
+        node.propose(argument)
+    elif command == "/ofertas":
+        offers = node.chain.pending_offers()
+        if console.json_output:
+            console.emit("offers", {"offers": offers})
+        else:
+            text = "\n".join(f"{offer['name']} | {offer['text']}\n  {offer['id']}" for offer in offers)
+            text = text or "No hay ofertas pendientes. Crea una con /ofrecer."
+    elif command in ("/iniciar", "/minar"):
+        if len(arguments) > 1:
+            raise ValueError(f"Uso: {command} [id]")
+        offer_id = arguments[0] if arguments else None
+        if command == "/iniciar":
+            node.start_classroom(offer_id)
+        else:
+            node.start_mining(offer_id)
+    elif command == "/decir":
+        node.chat(argument)
+    elif command == "/mensaje":
+        match = re.fullmatch(r'(?:"([^"]+)"|(\S+))\s+(.+)', argument)
+        if not match:
+            raise ValueError('Uso: /mensaje <dirección o "nombre del usuario"> <texto>')
+        quoted, name, message = match.groups()
+        node.chat(message, recipient=quoted or name)
     elif command == "/pausar":
         node.pause_mining()
     elif command == "/estado":
@@ -115,7 +149,7 @@ def handle_command(node: Node, line: str, console: Console) -> bool:
         agree = sum(u["hash"] == node.chain.head.hash for u in users[1:])
         text = (f"Cadena local #{node.chain.head.height}: {node.chain.head.hash}\n"
                 f"{agree}/{len(users) - 1} pares conectados anuncian el mismo hash. "
-                "Los anuncios se actualizan cada 5 segundos; para una foto estable usa /pausar en todos los nodos.")
+                "Los anuncios se actualizan cada 5 segundos.")
         if len(users) == 1:
             text += "\nTodavía no hay pares: falta conectar al salón."
     elif command == "/saldo":
@@ -129,17 +163,24 @@ def handle_command(node: Node, line: str, console: Console) -> bool:
     elif command in ("/cadena", "/ganadores"):
         if len(arguments) > 1:
             raise ValueError(f"Uso: {command} [cantidad]")
-        try:
-            count = int(arguments[0]) if arguments else 10
-        except ValueError as exc:
-            raise ValueError("La cantidad debe ser un entero entre 1 y 100") from exc
-        if not 1 <= count <= 100:
-            raise ValueError("La cantidad debe estar entre 1 y 100")
-        blocks = node.chain.recent(count)
+        if command == "/cadena" and arguments == ["todo"]:
+            blocks = node.chain.history()
+        else:
+            try:
+                count = int(arguments[0]) if arguments else 10
+            except ValueError as exc:
+                raise ValueError("La cantidad debe ser un entero entre 1 y 100") from exc
+            if not 1 <= count <= 100:
+                raise ValueError("La cantidad debe estar entre 1 y 100")
+            blocks = node.chain.recent(count)
         if console.json_output:
             console.emit("chain", {"blocks": [b.to_dict() for b in blocks], "height": node.chain.head.height, "hash": node.chain.head.hash})
         else:
-            text = "\n".join(f"#{b.height} | {b.miner_name} | +{b.reward} leonelcoin | nonce={b.nonce}\n  Hash: {b.hash}\n  Padre: {b.previous_hash}" for b in blocks)
+            text = "\n".join(
+                f"#{b.height} | {b.miner_name} | +{b.reward} leonelcoin | nonce={b.nonce}\n"
+                + (f"  Oferta de {b.offer.name}: {b.offer.text}\n" if b.offer else "")
+                + f"  Hash: {b.hash}\n  Padre: {b.previous_hash}" for b in blocks
+            )
             if not blocks:
                 text = f"Solo existe el génesis: {node.chain.head.hash}"
     elif command == "/conectar":
@@ -227,12 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=6000, help="Puerto TCP (predeterminado: 6000)")
     parser.add_argument("--advertise", help="IP o DNS que otros nodos pueden usar para conectarse a ti")
     parser.add_argument("--peer", action="append", default=[], metavar="IP:PUERTO", help="Par inicial; puedes repetir esta opción")
-    parser.add_argument("--data-dir", default="data/default", help="Carpeta exclusiva para la identidad y cadena de este nodo")
-    parser.add_argument("--network", default="leonelcoin-v1", help="Nombre de red; debe coincidir en todo el salón")
-    parser.add_argument("--difficulty", type=int, default=6, help="Ceros hexadecimales del PoW (1 a 7, predeterminado: 6)")
+    parser.add_argument("--data-dir", default="data/v2", help="Carpeta exclusiva para la identidad y cadena de este nodo")
+    parser.add_argument("--network", default=DEFAULT_NETWORK, help="Nombre de red; debe coincidir en todo el salón")
+    parser.add_argument("--difficulty", type=int, help="Fija los ceros hexadecimales del PoW (1 a 7); por defecto se ajusta a 120 s")
     parser.add_argument("--reward", type=int, default=50, help="Premio por bloque en leonelcoin (predeterminado: 50)")
     parser.add_argument("--workers", type=int, default=1, help="Procesos de minería por nodo (predeterminado: 1)")
-    parser.add_argument("--mine", action="store_true", help="Inicia tu minería local al arrancar")
+    parser.add_argument("--mine", action="store_true", help="Mina la primera oferta pendiente guardada al arrancar")
     parser.add_argument("--no-input", action="store_true", help="Ejecuta hasta Ctrl+C sin leer comandos de stdin")
     parser.add_argument("--json", action="store_true", help="Emite eventos JSON por línea para automatización")
     return parser

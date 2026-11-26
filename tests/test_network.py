@@ -91,35 +91,54 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
         self.nodes[1]._accept_block(block)
         await self.until(lambda: all(n.chain.head.hash == block.hash for n in self.nodes[1:]))
 
-    async def test_classroom_mines_continuously_and_chat_stays_responsive(self):
+    async def test_classroom_mines_selected_offer_and_stops_after_winner(self):
         first = await self.make_node(difficulty=3)
         seed = [("127.0.0.1", first.network.port)]
-        await self.make_node(seed, difficulty=3)
-        await self.make_node(seed, difficulty=3)
+        second = await self.make_node(seed, difficulty=3)
+        third = await self.make_node(seed, difficulty=3)
         await self.until(lambda: all(len(n.network.peers) == 2 for n in self.nodes))
-        first.start_classroom()
-        await self.until(lambda: all(n.miner.running and n.chain.head.height >= 4 for n in self.nodes))
-        self.nodes[1].chat("El chat funciona mientras minamos")
+        with self.assertRaisesRegex(ValueError, "No hay ofertas"):
+            first.start_classroom()
+        self.assertTrue(all(n.chain.head.height == 0 and not n.miner.running for n in self.nodes))
+
+        first.propose("Primera oferta")
+        second.propose("Elegir esta oferta")
+        await self.until(lambda: all(len(n.chain.pending_offers()) == 2 for n in self.nodes))
+        selected = next(o["id"] for o in second.chain.pending_offers() if o["text"] == "Elegir esta oferta")
+        first.start_classroom(selected)
+        third.chat("El chat funciona durante la ronda")
+        second.chat("Solo para el primer nodo", recipient=first.identity.address)
+        await self.until(lambda: all(n.chain.head.height == 1 and not n.miner.running for n in self.nodes))
         await self.until(lambda: all(any(e == "chat" for e, _ in self.events[i]) for i in range(3)))
-        for node in self.nodes:
-            self.assertTrue(all(p.is_alive() for p in node.miner.processes))
-            node.pause_mining()
-        await self.until(lambda: len({n.chain.head.hash for n in self.nodes}) == 1)
-        for node in self.nodes:
+        await self.until(lambda: any(d.get("recipient") for e, d in self.events[0] if e == "chat"))
+        await asyncio.sleep(0.25)
+        for index, node in enumerate(self.nodes):
             self.assertEqual(node.chain.main_hashes, first.chain.main_hashes)
-            self.assertEqual(sum(node.chain.balances.values()), node.chain.head.height * 50)
-            self.assertEqual(node.miner.latest_template["previous_hash"], node.chain.head.hash)
-        height = first.chain.head.height
+            self.assertEqual(node.chain.head.offer.id, selected)
+            self.assertEqual(sum(node.chain.balances.values()), 50)
+            self.assertEqual([o["text"] for o in node.chain.pending_offers()], ["Primera oferta"])
+            self.assertFalse(node.miner.running)
+            self.assertTrue(any(e == "mining_started" for e, _ in self.events[index]))
+            winners = [d for e, d in self.events[index] if e == "winner"]
+            self.assertEqual(winners[-1]["hash"], node.chain.head.hash)
+            self.assertFalse(winners[-1]["mining"])
+        direct = [[d for e, d in self.events[i] if e == "chat" and d.get("recipient")] for i in range(3)]
+        self.assertEqual([len(messages) for messages in direct], [1, 1, 0])
+        self.assertEqual(direct[0][0]["text"], "Solo para el primer nodo")
+
         first.start_mining()
-        await self.until(lambda: all(n.chain.head.height > height for n in self.nodes))
-        first.pause_mining()
+        await self.until(lambda: all(n.chain.head.height == 2 and not n.miner.running for n in self.nodes))
+        self.assertTrue(all(not n.chain.pending_offers() for n in self.nodes))
 
     async def test_late_join_syncs_multiple_batches_and_restores_after_restart(self):
         first = await self.make_node(difficulty=1)
         for _ in range(205):
             first.chain.add(mine(first.chain.head, first.chain.consensus))
+        for index in range(58):
+            first.propose(f"Oferta pendiente {index}")
         second = await self.make_node([("127.0.0.1", first.network.port)], difficulty=1)
         await self.until(lambda: second.chain.head.hash == first.chain.head.hash)
+        await self.until(lambda: second.chain.pending_offers() == first.chain.pending_offers())
         self.assertEqual(second.chain.main_hashes, first.chain.main_hashes)
         address = second.identity.address
         path = second.data_dir
@@ -129,6 +148,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
         await restored.start()
         self.assertEqual(restored.identity.address, address)
         self.assertEqual(restored.chain.head.hash, first.chain.head.hash)
+        self.assertEqual(restored.chain.pending_offers(), first.chain.pending_offers())
         await self.until(lambda: len(restored.network.peers) == 1)
 
     async def test_network_mismatch_is_rejected(self):

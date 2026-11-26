@@ -9,8 +9,8 @@ import { minerColor } from "./colors";
 const time = (ms: number) => new Date(ms).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 export default function ChainStrip({ blocks, me, freshHeight }: { blocks: Block[]; me?: string; freshHeight: number | null }) {
-  const [open, setOpen] = useState<Block | null>(null);
-  const visible = blocks.slice(0, 24);
+  const [openHash, setOpenHash] = useState<string | null>(null);
+  const open = blocks.find((block) => block.hash === openHash);
 
   return (
     <div className="panel p-5 sm:p-6">
@@ -19,12 +19,14 @@ export default function ChainStrip({ blocks, me, freshHeight }: { blocks: Block[
           <Link2 className="h-4 w-4 text-zinc-500" />
           <span className="label">Cadena de bloques · en vivo</span>
         </div>
-        <span className="font-mono text-[11px] text-zinc-500">{blocks.length} bloques cargados</span>
+        <span className="font-mono text-[11px] text-zinc-500">
+          {blocks.length} {blocks.length === 1 ? "bloque" : "bloques"}
+        </span>
       </div>
 
       <div className="scroll-x -mx-2 flex items-stretch overflow-x-auto px-2 pb-2">
         <AnimatePresence initial={false} mode="popLayout">
-          {visible.map((b, i) => {
+          {blocks.map((b, i) => {
             const c = minerColor(b.miner_name);
             const zeros = leadingZeros(b.hash);
             const fresh = b.height === freshHeight;
@@ -44,7 +46,7 @@ export default function ChainStrip({ blocks, me, freshHeight }: { blocks: Block[
                     "group relative w-[190px] overflow-hidden rounded-2xl border bg-zinc-950/70 p-4 text-left transition-colors hover:border-white/20",
                     mine ? "border-signal/30" : "border-white/[.07]"
                   )}
-                  onClick={() => setOpen(b)}
+                  onClick={() => setOpenHash(b.hash)}
                   type="button"
                 >
                   {fresh && (
@@ -73,16 +75,16 @@ export default function ChainStrip({ blocks, me, freshHeight }: { blocks: Block[
                     <span className="text-zinc-500">{b.hash.slice(zeros, 22)}…</span>
                   </div>
                   <div className="mt-2 flex items-center justify-between font-mono text-[10.5px] text-zinc-600">
-                    <span>{b.nonce >= 0 ? time(b.timestamp) : "recibiendo…"}</span>
+                    <span>{b.height > 0 ? time(b.timestamp) : ""}</span>
                     <span className="text-amber/80">+{b.reward}</span>
                   </div>
                 </button>
-                {i < visible.length - 1 && <Connector color={c} />}
+                {i < blocks.length - 1 && <Connector color={c} />}
               </motion.div>
             );
           })}
         </AnimatePresence>
-        {visible.length === 0 && <div className="py-10 text-sm text-zinc-500">Esperando bloques…</div>}
+        {blocks.length === 0 && <div className="py-10 text-sm text-zinc-500">Esperando bloques…</div>}
       </div>
 
       <AnimatePresence>
@@ -92,26 +94,31 @@ export default function ChainStrip({ blocks, me, freshHeight }: { blocks: Block[
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
             exit={{ opacity: 0 }}
             initial={{ opacity: 0 }}
-            onClick={() => setOpen(null)}
+            onClick={() => setOpenHash(null)}
           >
             <motion.div
+              aria-labelledby="block-details-title"
+              aria-modal="true"
               animate={{ scale: 1, y: 0 }}
               className="panel w-full max-w-xl bg-panel p-6"
               exit={{ scale: 0.95, y: 10 }}
               initial={{ scale: 0.95, y: 10 }}
               onClick={(e) => e.stopPropagation()}
+              role="dialog"
             >
               <div className="flex items-baseline justify-between">
-                <h3 className="font-semibold text-2xl">Bloque #{open.height}</h3>
-                <span className="font-mono text-xs text-zinc-500">{open.nonce >= 0 ? new Date(open.timestamp).toLocaleString("es-MX") : ""}</span>
+                <h3 className="font-semibold text-2xl" id="block-details-title">Bloque #{open.height}</h3>
+                <span className="font-mono text-xs text-zinc-500">{new Date(open.timestamp).toLocaleString("es-MX")}</span>
               </div>
               <dl className="mt-5 space-y-3 font-mono text-[12px]">
                 {(
                   [
                     ["Minero", open.miner_name],
                     ["Recompensa", `${open.reward} leonelcoin`],
-                    ["Dificultad", `${open.difficulty} ceros`],
-                    ["Nonce", open.nonce >= 0 ? String(open.nonce) : "—"],
+                    ["Dificultad", `≈ ${open.difficulty.toLocaleString("es-MX")} intentos`],
+                    ["Tiempo de minería", `${((open.timestamp - open.started_at) / 1000).toFixed(1)} s`],
+                    ["Nonce", open.nonce],
+                    ...(open.offer ? [["Oferta", open.offer.text], ["Propuesta por", open.offer.name]] : []),
                     ["Hash", open.hash],
                     ["Padre", open.previous_hash],
                     ["Dirección", open.miner],

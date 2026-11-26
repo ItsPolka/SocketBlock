@@ -2,13 +2,12 @@
 
 Dashboard en vivo para tu nodo: minado en tiempo real, cadena de bloques animada, red del salón, ranking de mineros y chat.
 
-- **Panel de minado:** número del bloque en letrero tipo aeropuerto, flujo de hashes SHA-256 de tu siguiente bloque con los ceros resaltados, mejor intento contra el objetivo de dificultad.
-- **Red P2P:** mapa de compañeros conectados; cuando alguien mina, el bloque se ve viajar a los demás.
-- **Cadena en vivo:** cada bloque entra animado; clic para ver hash, padre, nonce y minero.
-- **Ranking, actividad y chat**, más aviso (y confeti) cuando encuentras un bloque.
-- Botones **Minar / Pausar / Iniciar salón**.
+- Escribe el contenido del bloque y pulsa **Crear oferta**. Cada usuario puede publicar ofertas.
+- Selecciona una oferta pendiente y pulsa **Iniciar salón** para abrir una ronda en toda la red, o **Minar** para hacerlo en tu nodo. **Pausar** detiene tu minero local.
+- Al validar el bloque ganador, verás quién ganó y la ronda se detendrá. La cadena completa queda visible desde el génesis. Pulsa un bloque para ver su oferta, minero, hash y nonce.
+- El panel muestra el tiempo de la ronda y ejemplos SHA-256 calculados en el navegador a partir de la oferta activa. Python realiza la minería. La dificultad adaptativa tiene una meta de 120 segundos en promedio.
+- En **Actividad y chat**, elige **Todo el salón** o selecciona a un usuario conectado para enviarle un mensaje directo.
 
-Los hashes del panel se calculan en el navegador solo para visualizar el trabajo; el minero real es el de Python.
 Componentes `background-paths` y `split-flap-text` de [kokonutui](https://github.com/kokonut-labs/kokonutui) (MIT).
 
 ## Cómo funciona
@@ -17,7 +16,7 @@ Componentes `background-paths` y `split-flap-text` de [kokonutui](https://github
 
 ## Uso
 
-Requiere Node.js 18+ solo para compilar el front una vez:
+Requiere Node.js 22.12+ solo para compilar el front una vez:
 
 ```sh
 cd gui/web
